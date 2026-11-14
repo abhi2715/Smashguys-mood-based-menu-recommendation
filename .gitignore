@@ -1,8 +1,10 @@
 .env
+.env.*
+.vercel
 venv/
 data/
 __pycache__/
 .DS_Store
 models_backup/
 menu-source/
-.env.*
+*.pt

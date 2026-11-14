@@ -1,8 +1,7 @@
-torch>=2.2
-torchvision>=0.17
+onnxruntime>=1.18
 fastapi>=0.110
 uvicorn[standard]>=0.29
-opencv-python>=4.8.0,<5
+opencv-python-headless>=4.8.0,<5
 numpy>=1.24.0
 qrcode>=7.4
 certifi>=2024.2.2  # CA certificates for the Groq chatbot

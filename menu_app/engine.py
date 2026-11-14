@@ -4,9 +4,9 @@ import os
 
 import cv2
 import numpy as np
-import torch
+import onnxruntime as ort
 
-from .model import LABELS, EmotionNet
+LABELS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -57,32 +57,31 @@ def align_crop(gray, face):
 
 
 class EmotionClassifier:
-    """Ensemble of every models/emotion_*.pt checkpoint; probabilities are averaged (with flip TTA)."""
+    """Ensemble of every models/emotion_*.onnx model; probabilities are averaged (with flip TTA). CPU, no torch."""
 
     def __init__(self, models_dir=MODELS_DIR):
-        paths = sorted(glob.glob(os.path.join(models_dir, "emotion_*.pt")))
+        paths = sorted(glob.glob(os.path.join(models_dir, "emotion_*.onnx")))
         if not paths:
-            raise FileNotFoundError(f"No emotion_*.pt in {models_dir}. Copy them from the training project (train_torch.py)")
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        self.models, self.info = [], []
-        for path in paths:
-            ckpt = torch.load(path, map_location="cpu")
-            model = EmotionNet(ckpt.get("arch", "resnet18"))
-            model.load_state_dict(ckpt["state_dict"])
-            self.models.append(model.to(self.device).eval())
-            self.info.append({"file": os.path.basename(path), "arch": ckpt.get("arch", "resnet18"),
-                              "val_acc": ckpt.get("val_acc")})
+            raise FileNotFoundError(f"No emotion_*.onnx in {models_dir}. Run tools/export_onnx.py")
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        self.sessions = [ort.InferenceSession(p, opts, providers=["CPUExecutionProvider"]) for p in paths]
+        self.info = [{"file": os.path.basename(p), "arch": "resnet18", "val_acc": None} for p in paths]
 
-    @torch.no_grad()
     def predict(self, crops):
         """crops: list of 48x48 uint8 grayscale arrays -> (N, 7) probabilities."""
         if not crops:
             return np.zeros((0, len(LABELS)), dtype=np.float32)
-        x = torch.from_numpy(np.stack(crops)).float().div(255.0).unsqueeze(1).to(self.device)
-        x = torch.cat([x, torch.flip(x, dims=[3])])
-        p = sum(model(x).softmax(1) for model in self.models) / len(self.models)
+        x = np.stack(crops).astype(np.float32)[:, None] / 255.0
+        x = np.concatenate([x, x[:, :, :, ::-1]]).copy()
+        p = 0
+        for s in self.sessions:
+            logits = s.run(None, {"x": x})[0]
+            e = np.exp(logits - logits.max(1, keepdims=True))
+            p = p + e / e.sum(1, keepdims=True)
+        p = p / len(self.sessions)
         n = len(crops)
-        return ((p[:n] + p[n:]) / 2).cpu().numpy()
+        return ((p[:n] + p[n:]) / 2).astype(np.float32)
 
 
 def _iou(a, b):

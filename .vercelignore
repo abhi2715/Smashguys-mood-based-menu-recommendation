@@ -1,0 +1,10 @@
+venv/
+models_backup/
+menu-source/
+.env
+data/
+__pycache__/
+.DS_Store
+tools/
+.env.local
+.vercel
