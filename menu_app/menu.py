@@ -246,6 +246,7 @@ MOODS = {
 
 COURSES = ["main", "side", "drink", "dessert"]
 # How much leaving a course out of a budget combo hurts (a main is almost never dropped)
+AWAY_PENALTY = 2.5  # pushes just-shown dishes down on Shuffle without hiding them
 SKIP_PENALTY = {"main": 50, "side": 2.0, "drink": 2.5, "dessert": 1.5}
 
 TAG_REASONS = {
@@ -260,13 +261,34 @@ TAG_REASONS = {
 }
 
 
-def _score(item, weights, rng):
+# Time of day nudges the picks (applied on top of the mood weights)
+DAYPARTS = [
+    (range(5, 12), "morning", "☀️ Morning picks", dict(caffeine=1.5, energizing=1, light=0.5, indulgent=-0.5)),
+    (range(12, 17), "afternoon", "🌤️ Afternoon picks", dict(refreshing=0.8, cold=0.5, light=0.3)),
+    (range(17, 22), "evening", "🌆 Dinner picks", dict(hearty=0.8, indulgent=0.4, caffeine=-1)),
+]
+LATE = ("late", "🌙 Late-night picks", dict(indulgent=1, sweet=0.8, comfort=0.6, caffeine=-2))
+
+
+def daypart(hour):
+    if hour is None:
+        return None, None, {}
+    for hours, key, label, weights in DAYPARTS:
+        if hour in hours:
+            return key, label, weights
+    return LATE
+
+
+def _score(item, weights, rng, lift):
     tags = set(item["tags"])
     if item["chef"]:
         tags.add("chef")
     if item["new"]:
         tags.add("new")
     score = sum(weights.get(t, 0) for t in tags) / (1 + 0.15 * len(tags))
+    stats = lift.get(item["id"])
+    if stats and stats["n"]:
+        score += clamp(stats["avg"] / 50, -1, 1.5)  # dishes that really lifted moods rise up the list
     return score + rng.uniform(0, 0.6), tags
 
 
@@ -285,15 +307,25 @@ def _reason(tags, weights):
     return " · ".join(parts).capitalize() if parts else "A crowd favourite"
 
 
-def recommend(mood, diet="any", budget=None, avoid=(), max_spice=2, seed=None):
-    """Return a mood combo (one item per course) plus extra picks, honouring the filters."""
+def recommend(mood, diet="any", budget=None, avoid=(), max_spice=2, seed=None, hour=None, lift=None,
+              exclude=(), courses=COURSES, away=()):
+    """Return a mood combo (one item per course) plus extra picks, honouring the filters.
+
+    lift: {item_id: {"avg": mood-lift points, "n": ratings}} learned from after-meal rescans.
+    away: dish ids just shown; Shuffle passes them so a different combo comes up whenever the filters allow one.
+    """
     mood = mood if mood in MOODS else "neutral"
     profile = MOODS[mood]
-    weights = profile["weights"]
+    _, part_label, part_weights = daypart(hour)
+    weights = dict(profile["weights"])
+    for tag, w in part_weights.items():
+        weights[tag] = weights.get(tag, 0) + 0.6 * w
     rng = random.Random(seed)
-    avoid = set(avoid)
+    avoid, exclude, lift, away = set(avoid), set(exclude), lift or {}, set(away)
 
     def allowed(item):
+        if item["id"] in exclude:
+            return False
         if diet == "veg" and not item["veg"]:
             return False
         if diet == "nonveg" and item["veg"] and item["course"] in ("main", "side"):
@@ -305,14 +337,16 @@ def recommend(mood, diet="any", budget=None, avoid=(), max_spice=2, seed=None):
     ranked = {c: [] for c in COURSES}
     for item in MENU:
         if allowed(item):
-            score, tags = _score(item, weights, rng)
+            score, tags = _score(item, weights, rng, lift)
+            if item["id"] in away:
+                score -= AWAY_PENALTY
             ranked[item["course"]].append((score, item, tags))
     for c in COURSES:
         ranked[c].sort(key=lambda t: -t[0])
 
     # Best-scoring combo within budget: search the top picks per course, where skipping a course costs a penalty
     best, best_score = {}, float("-inf")
-    candidates = [[None] + list(range(min(8, len(ranked[c])))) for c in COURSES]
+    candidates = [[None] + (list(range(min(8, len(ranked[c])))) if c in courses else []) for c in COURSES]
     for choice in itertools.product(*candidates):
         price = sum(ranked[c][i][1]["price"] for c, i in zip(COURSES, choice) if i is not None)
         if budget and price > budget:
@@ -323,26 +357,52 @@ def recommend(mood, diet="any", budget=None, avoid=(), max_spice=2, seed=None):
         if score > best_score:
             best, best_score = {c: i for c, i in zip(COURSES, choice) if i is not None}, score
     combo = best
+    top_score = max((e[0] for c in COURSES for e in ranked[c][:1]), default=1) or 1
 
     def view(entry):
         score, item, tags = entry
+        stats = lift.get(item["id"])
         return {**{k: item[k] for k in ("id", "name", "section", "course", "price", "veg", "desc", "chef", "new",
                                        "spicy", "allergens")},
-                "reason": _reason(tags, weights), "match": round(clamp(60 + 39 * score / top_score, 40, 99))}
-
-    top_score = max((e[0] for c in COURSES for e in ranked[c][:1]), default=1) or 1
+                "reason": _reason(tags, weights), "match": round(clamp(60 + 39 * score / top_score, 40, 99)),
+                "lift": stats if stats and stats["n"] else None}
 
     combo_items = [view(ranked[c][i]) for c, i in combo.items()]
     picked = {it["id"] for it in combo_items}
-    extras = sorted((e for c in COURSES for e in ranked[c][:4] if e[1]["id"] not in picked), key=lambda e: -e[0])
+    extras = sorted((e for c in courses for e in ranked[c][:4] if e[1]["id"] not in picked), key=lambda e: -e[0])
     addon = ADD_ONS.get(profile["addon"]) if profile["addon"] else None
     return {
         "mood": mood,
         "vibe": profile["vibe"],
         "emoji": profile["emoji"],
         "line": profile["line"],
+        "daypart": part_label,
         "combo": combo_items,
         "total": sum(it["price"] for it in combo_items),
         "more": [view(e) for e in extras[:6]],
         "addon": addon,
     }
+
+
+def recommend_table(moods, diet="any", avoid=(), max_spice=2, seed=None, hour=None, lift=None):
+    """One main + drink per person (by their own mood, no repeated mains) plus sides and desserts to share."""
+    seed = seed or 0
+    people, taken = [], set()
+    for i, mood in enumerate(moods):
+        rec = recommend(mood, diet=diet, avoid=avoid, max_spice=max_spice, seed=seed + i, hour=hour, lift=lift,
+                        exclude=taken, courses=("main", "drink"))
+        taken |= {it["id"] for it in rec["combo"] if it["course"] == "main"}
+        people.append({"mood": rec["mood"], "vibe": rec["vibe"], "emoji": rec["emoji"], "items": rec["combo"]})
+    # The table's shared plates follow the most common mood; ties go to whoever was scanned first (as in the UI)
+    group = max(dict.fromkeys(moods), key=moods.count) if moods else "neutral"
+    shared_rec = recommend(group, diet=diet, avoid=avoid, max_spice=max_spice, seed=seed + 99, hour=hour, lift=lift,
+                           courses=("side", "dessert"))
+    plates = max(1, (len(moods) + 1) // 2)
+    shared = [{**it, "qty": plates} for it in shared_rec["combo"]]
+    shared_total = sum(it["price"] * it["qty"] for it in shared)
+    for p in people:
+        p["subtotal"] = sum(it["price"] for it in p["items"])
+        p["share"] = round(p["subtotal"] + shared_total / max(1, len(people)))
+    return {"group_mood": group, "group_vibe": MOODS.get(group, MOODS["neutral"])["vibe"], "people": people,
+            "shared": shared, "total": sum(p["subtotal"] for p in people) + shared_total,
+            "daypart": shared_rec["daypart"]}

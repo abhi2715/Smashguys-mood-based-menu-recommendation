@@ -1,15 +1,8 @@
+.env
 venv/
+data/
 __pycache__/
 .DS_Store
-*.log
-cache/
-data/
-images/
-expression/
-Research paper/
-Samsh Guys Menu/
-*.keras
-*.ipynb
-models/*
-!models/emotion_resnet18.pt
-!models/face_detection_yunet_2023mar.onnx
+models_backup/
+menu-source/
+.env.*

@@ -1,16 +1,16 @@
 """Face detection + expression classification + per-face temporal smoothing."""
+import glob
 import os
-import sys
 
 import cv2
 import numpy as np
 import torch
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-from train_torch import LABELS, EmotionNet  # noqa: E402
+from .model import LABELS, EmotionNet
 
-MODEL_PATH = os.path.join(ROOT, "models", "emotion_resnet18.pt")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+MODELS_DIR = os.path.join(ROOT, "models")
 YUNET_PATH = os.path.join(ROOT, "models", "face_detection_yunet_2023mar.onnx")
 FACE_SIZE = 48
 # FER-2013 framing: crop side is ~1.25x the detector's face width, eyes sit ~40% down the crop
@@ -57,24 +57,30 @@ def align_crop(gray, face):
 
 
 class EmotionClassifier:
-    def __init__(self, path=MODEL_PATH):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"{path} not found. Train it first: venv/bin/python train_torch.py")
+    """Ensemble of every models/emotion_*.pt checkpoint; probabilities are averaged (with flip TTA)."""
+
+    def __init__(self, models_dir=MODELS_DIR):
+        paths = sorted(glob.glob(os.path.join(models_dir, "emotion_*.pt")))
+        if not paths:
+            raise FileNotFoundError(f"No emotion_*.pt in {models_dir}. Copy them from the training project (train_torch.py)")
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        ckpt = torch.load(path, map_location="cpu")
-        self.model = EmotionNet(ckpt.get("arch", "resnet18"), pretrained=False)
-        self.model.load_state_dict(ckpt["state_dict"])
-        self.model.to(self.device).eval()
-        self.val_acc = ckpt.get("val_acc")
+        self.models, self.info = [], []
+        for path in paths:
+            ckpt = torch.load(path, map_location="cpu")
+            model = EmotionNet(ckpt.get("arch", "resnet18"))
+            model.load_state_dict(ckpt["state_dict"])
+            self.models.append(model.to(self.device).eval())
+            self.info.append({"file": os.path.basename(path), "arch": ckpt.get("arch", "resnet18"),
+                              "val_acc": ckpt.get("val_acc")})
 
     @torch.no_grad()
     def predict(self, crops):
-        """crops: list of 48x48 uint8 grayscale arrays -> (N, 7) probabilities (flip TTA)."""
+        """crops: list of 48x48 uint8 grayscale arrays -> (N, 7) probabilities."""
         if not crops:
             return np.zeros((0, len(LABELS)), dtype=np.float32)
         x = torch.from_numpy(np.stack(crops)).float().div(255.0).unsqueeze(1).to(self.device)
         x = torch.cat([x, torch.flip(x, dims=[3])])
-        p = self.model(x).softmax(1)
+        p = sum(model(x).softmax(1) for model in self.models) / len(self.models)
         n = len(crops)
         return ((p[:n] + p[n:]) / 2).cpu().numpy()
 
@@ -148,6 +154,7 @@ class EmotionEngine:
             idx = int(np.argmax(probs))
             results.append({
                 "id": tid,
+                "raw": {label: round(float(p), 4) for label, p in zip(LABELS, raw[i])},
                 "box": [x / w, y / h, fw / w, fh / h],
                 "emotion": LABELS[idx],
                 "confidence": float(probs[idx]),
