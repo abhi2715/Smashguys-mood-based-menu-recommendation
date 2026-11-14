@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoodLens</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Archivo+Black&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-mode="coach">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">MoodLens</span>
+      <span class="brand-sub">real-time emotion AI</span>
+    </div>
+    <nav class="mode-switch" role="tablist" aria-label="Mode">
+      <button role="tab" class="mode-btn active" data-mode="coach" aria-selected="true">
+        <span aria-hidden="true">💬</span> Conversation Coach
+      </button>
+      <button role="tab" class="mode-btn" data-mode="menu" aria-selected="false">
+        <span aria-hidden="true">🍔</span> Mood Menu
+      </button>
+    </nav>
+    <div class="status">
+      <span class="status-pill" id="status"><span class="dot"></span><span id="status-text">Idle</span></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ============ LEFT: live analysis ============ -->
+    <section class="col-left">
+      <div class="card stage-card">
+        <div class="stage" id="stage">
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+          <div class="stage-empty" id="stage-empty">
+            <div class="pulse-ring" aria-hidden="true"><span>🙂</span></div>
+            <h2 id="empty-title">Read the room in real time</h2>
+            <p id="empty-sub">Point your camera at the person you're talking to, or share your video-call window.
+              Everything runs locally on this machine.</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" data-start="camera">📷 Start camera</button>
+              <button class="btn btn-ghost" data-start="screen">🖥️ Share video call</button>
+            </div>
+          </div>
+          <div class="stage-hud" id="stage-hud" hidden>
+            <span class="hud-chip" id="hud-target">Tracking largest face</span>
+            <span class="hud-chip hud-muted" id="hud-perf"></span>
+          </div>
+        </div>
+        <div class="stage-controls">
+          <div class="seg" id="source-seg">
+            <button class="seg-btn active" data-source="camera">📷 Camera</button>
+            <button class="seg-btn" data-source="screen">🖥️ Video call</button>
+          </div>
+          <select id="camera-select" class="select" aria-label="Camera" hidden></select>
+          <span class="hint" id="stage-hint">Tip: click a face to choose who to track.</span>
+          <button class="btn btn-small btn-danger" id="stop-btn" hidden>■ Stop</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>Emotion breakdown</h3>
+            <span class="muted small" id="breakdown-who">—</span>
+          </div>
+          <div class="bars" id="bars"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h3>Mood timeline</h3>
+            <span class="muted small">last 60 s</span>
+          </div>
+          <canvas id="timeline" class="timeline"></canvas>
+          <div class="legend" id="legend"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RIGHT: coach panel ============ -->
+    <section class="col-right panel-coach" id="panel-coach">
+      <div class="card hero" id="coach-hero">
+        <div class="hero-top">
+          <div class="hero-emoji" id="coach-emoji">🫥</div>
+          <div class="hero-text">
+            <span class="eyebrow">Their mood</span>
+            <h2 id="coach-headline">Waiting for a face…</h2>
+            <p class="muted" id="coach-mood-label">Start the camera to begin</p>
+          </div>
+        </div>
+        <div class="meters">
+          <div class="meter">
+            <div class="meter-label"><span>Positivity</span><b id="valence-val">–</b></div>
+            <div class="meter-track"><div class="meter-fill valence" id="valence-fill"></div></div>
+          </div>
+          <div class="meter">
+            <div class="meter-label"><span>Expressiveness</span><b id="arousal-val">–</b></div>
+            <div class="meter-track"><div class="meter-fill arousal" id="arousal-fill"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Conversation setting</h3></div>
+        <div class="chips" id="context-chips"></div>
+      </div>
+
+      <div class="alert-toast" id="alert-toast" hidden></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>How to respond</h3>
+          <div class="pills">
+            <span class="pill" id="coach-tone">Tone —</span>
+            <span class="pill" id="coach-pace">Pace —</span>
+          </div>
+        </div>
+        <p class="read" id="coach-read">Once a face is detected, you'll get live guidance on how to talk to them.</p>
+        <h4 class="sub">Try saying <span class="muted small">(click to copy)</span></h4>
+        <div class="quotes" id="coach-say"></div>
+        <div class="do-avoid">
+          <div>
+            <h4 class="sub ok">✓ Do</h4>
+            <ul id="coach-do" class="list"></ul>
+          </div>
+          <div>
+            <h4 class="sub bad">✕ Avoid</h4>
+            <ul id="coach-avoid" class="list"></ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2 tight">
+        <div class="card">
+          <div class="card-head"><h3>Live alerts</h3></div>
+          <ul class="feed" id="alert-feed"><li class="muted small">No alerts yet.</li></ul>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h3>Session</h3>
+            <button class="link-btn" id="reset-session">Reset</button>
+          </div>
+          <div class="session-time" id="session-time">00:00</div>
+          <div class="session-bars" id="session-bars"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RIGHT: menu panel ============ -->
+    <section class="col-right panel-menu" id="panel-menu" hidden>
+      <div class="card sg-hero">
+        <div class="sg-brand">SMASH GUYS <span>mood menu</span></div>
+        <div class="sg-vibe">
+          <span class="sg-emoji" id="menu-emoji">🍔</span>
+          <div>
+            <h2 id="menu-vibe">Show us your face</h2>
+            <p id="menu-line">We'll read your mood and build the perfect order.</p>
+          </div>
+        </div>
+        <div class="mood-picker" id="mood-picker" aria-label="Mood source"></div>
+      </div>
+
+      <div class="card">
+        <div class="filters">
+          <div class="filter">
+            <label>Diet</label>
+            <div class="seg small" id="diet-seg">
+              <button class="seg-btn active" data-diet="any">Any</button>
+              <button class="seg-btn" data-diet="veg"><i class="vdot veg"></i>Veg</button>
+              <button class="seg-btn" data-diet="nonveg"><i class="vdot nonveg"></i>Non-veg</button>
+            </div>
+          </div>
+          <div class="filter">
+            <label>Spice</label>
+            <div class="seg small" id="spice-seg">
+              <button class="seg-btn" data-spice="0">Mild</button>
+              <button class="seg-btn" data-spice="1">Medium</button>
+              <button class="seg-btn active" data-spice="2">Hot 🌶️🌶️</button>
+            </div>
+          </div>
+          <div class="filter">
+            <label for="budget">Budget <b id="budget-val">No limit</b></label>
+            <input type="range" id="budget" min="400" max="2500" step="50" value="2500">
+          </div>
+          <div class="filter">
+            <label>Avoid</label>
+            <div class="chips small" id="avoid-chips">
+              <button class="chip" data-avoid="egg">🥚 Egg</button>
+              <button class="chip" data-avoid="nuts">🥜 Nuts</button>
+              <button class="chip" data-avoid="mushroom">🍄 Mushroom</button>
+              <button class="chip" data-avoid="alcohol">🍷 Alcohol</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Your mood combo</h3>
+          <div class="head-actions">
+            <button class="btn btn-small btn-ghost" id="lock-btn" title="Freeze recommendations">🔓 Live</button>
+            <button class="btn btn-small btn-yellow" id="shuffle-btn">🔀 Shuffle</button>
+          </div>
+        </div>
+        <div class="combo" id="combo"></div>
+        <div class="combo-total">
+          <span>Combo total</span><b id="combo-total">₹0</b>
+        </div>
+        <div class="addon" id="addon" hidden></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>More for your mood</h3></div>
+        <div class="more" id="more"></div>
+        <p class="muted small note">All burger buns contain milk. Prices in ₹, before taxes. Dishes come from different kitchens and may not arrive in order.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="copy-toast" id="copy-toast" hidden>Copied</div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
